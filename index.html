@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>タンパク質折りたたみ梯子</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+<div class="max-w-5xl mx-auto p-4">
+  <h1 class="text-2xl font-bold text-center mb-2 text-amber-400">タンパク質折りたたみ梯子</h1>
+  <p class="text-center text-gray-400 text-sm mb-6">HP モデルによる疎水性コア形成シミュレーション</p>
+
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <label class="block text-sm font-semibold text-gray-300 mb-2">アミノ酸配列（1文字コード）</label>
+    <div class="flex gap-2">
+      <input id="seqInput" type="text" value="MVLSPADKTNV"
+        placeholder="例: MVLSPADKTNV"
+        aria-label="アミノ酸配列入力" tabindex="0"
+        class="flex-1 bg-gray-700 rounded-lg px-3 py-2 text-white font-mono uppercase text-lg focus:outline-none focus:ring-2 focus:ring-amber-400"
+        oninput="this.value=this.value.toUpperCase().replace(/[^ACDEFGHIKLMNPQRSTVWY]/g,'')"
+        maxlength="40">
+      <button aria-label="配列を解析" tabindex="0" onclick="analyze()"
+        class="px-6 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg font-semibold">解析</button>
+    </div>
+    <div class="flex flex-wrap gap-2 mt-3">
+      <button aria-label="ヘモグロビンβ鎖のサンプル配列を読み込む" tabindex="0" onclick="loadSample('MVLSPADKTNV')"
+        class="px-3 py-1 rounded bg-gray-600 hover:bg-gray-500 text-sm font-mono">MVLSPADKTNV</button>
+      <button aria-label="疎水性コア形成サンプルを読み込む" tabindex="0" onclick="loadSample('HPHPPHHPHPH')"
+        class="px-3 py-1 rounded bg-gray-600 hover:bg-gray-500 text-sm font-mono">HPHPPHHPHPH</button>
+      <button aria-label="グルカゴンのサンプル配列を読み込む" tabindex="0" onclick="loadSample('HSQGTFTSDYS')"
+        class="px-3 py-1 rounded bg-gray-600 hover:bg-gray-500 text-sm font-mono">HSQGTFTSDYS</button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+    <div class="bg-gray-800 rounded-xl p-4">
+      <h2 class="text-lg font-semibold mb-3 text-amber-300">疎水性インデックス（Kyte-Doolittle）</h2>
+      <svg id="barChart" width="100%" height="200" viewBox="0 0 460 200" class="rounded bg-gray-900"></svg>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-4">
+      <h2 class="text-lg font-semibold mb-3 text-amber-300">HP モデル 2D 折りたたみ経路</h2>
+      <canvas id="foldCanvas" width="360" height="280" class="rounded bg-gray-900 w-full"></canvas>
+    </div>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <h2 class="text-lg font-semibold mb-3 text-amber-300">配列解析結果</h2>
+    <div id="seqDisplay" class="flex flex-wrap gap-1 mb-3"></div>
+    <div id="stats" class="grid grid-cols-3 gap-2 text-sm"></div>
+  </div>
+
+  <div class="bg-gray-800 rounded-xl p-4">
+    <h2 class="text-lg font-semibold mb-3 text-amber-300">20種アミノ酸 疎水性スコア一覧</h2>
+    <div class="overflow-x-auto">
+      <table class="text-xs w-full">
+        <thead>
+          <tr class="text-gray-400 border-b border-gray-600">
+            <th class="text-left py-1 pr-3">1文字コード</th>
+            <th class="text-left py-1 pr-3">名称</th>
+            <th class="text-left py-1 pr-3">スコア</th>
+            <th class="text-left py-1">HP分類</th>
+          </tr>
+        </thead>
+        <tbody id="aaTable"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const KD = {
+  A:  1.8, R: -4.5, N: -3.5, D: -3.5, C:  2.5,
+  Q: -3.5, E: -3.5, G: -0.4, H: -3.2, I:  4.5,
+  L:  3.8, K: -3.9, M:  1.9, F:  2.8, P: -1.6,
+  S: -0.8, T: -0.7, W: -0.9, Y: -1.3, V:  4.2
+};
+
+const AA_NAMES = {
+  A: 'アラニン', R: 'アルギニン', N: 'アスパラギン', D: 'アスパラギン酸',
+  C: 'システイン', Q: 'グルタミン', E: 'グルタミン酸', G: 'グリシン',
+  H: 'ヒスチジン', I: 'イソロイシン', L: 'ロイシン', K: 'リジン',
+  M: 'メチオニン', F: 'フェニルアラニン', P: 'プロリン', S: 'セリン',
+  T: 'スレオニン', W: 'トリプトファン', Y: 'チロシン', V: 'バリン'
+};
+
+function isHydrophobic(aa) {
+  return (KD[aa] || 0) > 0;
+}
+
+function loadSample(seq) {
+  document.getElementById('seqInput').value = seq;
+  analyze();
+}
+
+function analyze() {
+  const raw = document.getElementById('seqInput').value.toUpperCase().replace(/[^ACDEFGHIKLMNPQRSTVWY]/g, '');
+  if (raw.length === 0) return;
+  const seq = raw.slice(0, 40);
+
+  drawBarChart(seq);
+  drawFolding(seq);
+  drawSeqDisplay(seq);
+  drawStats(seq);
+  localStorage.setItem('protein-seq', seq);
+}
+
+function drawBarChart(seq) {
+  const svg = document.getElementById('barChart');
+  const W = 460, H = 200;
+  const padL = 40, padR = 10, padT = 15, padB = 25;
+  const gw = W - padL - padR;
+  const gh = H - padT - padB;
+  const n = seq.length;
+  const barW = Math.max(2, gw / n - 1);
+  const maxV = 5, minV = -5;
+  const yScale = gh / (maxV - minV);
+
+  let content = '';
+
+  // axes
+  const zeroY = padT + gh - (0 - minV) * yScale;
+  content += `<line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#6b7280" stroke-width="1"/>`;
+  content += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H-padB}" stroke="#4b5563" stroke-width="1"/>`;
+  content += `<text x="${padL-5}" y="${zeroY+4}" text-anchor="end" fill="#9ca3af" font-size="10">0</text>`;
+  content += `<text x="${padL-5}" y="${padT+4}" text-anchor="end" fill="#9ca3af" font-size="10">5</text>`;
+  content += `<text x="${padL-5}" y="${H-padB+4}" text-anchor="end" fill="#9ca3af" font-size="10">-5</text>`;
+
+  seq.split('').forEach((aa, i) => {
+    const score = KD[aa] !== undefined ? KD[aa] : 0;
+    const x = padL + i * (gw / n);
+    const barH = Math.abs(score) * yScale;
+    const y = score >= 0 ? zeroY - barH : zeroY;
+    const color = score > 0 ? '#f97316' : '#60a5fa';
+    content += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${color}" opacity="0.85"/>`;
+    if (n <= 20) {
+      content += `<text x="${x + barW/2}" y="${H-padB+14}" text-anchor="middle" fill="#d1d5db" font-size="9">${escapeHtml(aa)}</text>`;
+    }
+  });
+
+  svg.innerHTML = content;
+}
+
+function drawFolding(seq) {
+  const canvas = document.getElementById('foldCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#030712';
+  ctx.fillRect(0, 0, W, H);
+
+  const n = seq.length;
+  if (n === 0) return;
+
+  // HP model: greedy 2D grid folding
+  const CELL = Math.min(Math.floor(Math.min(W, H) / (Math.sqrt(n) + 3)), 28);
+  const positions = foldHP(seq, CELL);
+
+  if (!positions) return;
+
+  // find bounds
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  positions.forEach(([x,y]) => {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  });
+  const offX = (W - (maxX - minX + CELL)) / 2 - minX;
+  const offY = (H - (maxY - minY + CELL)) / 2 - minY;
+
+  // draw bonds
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#9ca3af';
+  for (let i = 0; i < positions.length - 1; i++) {
+    ctx.beginPath();
+    ctx.moveTo(positions[i][0] + offX + CELL/2, positions[i][1] + offY + CELL/2);
+    ctx.lineTo(positions[i+1][0] + offX + CELL/2, positions[i+1][1] + offY + CELL/2);
+    ctx.stroke();
+  }
+
+  // draw HH contacts (dashed)
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = '#f97316';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < positions.length; i++) {
+    for (let j = i + 2; j < positions.length; j++) {
+      if (!isHydrophobic(seq[i]) || !isHydrophobic(seq[j])) continue;
+      const dx = positions[j][0] - positions[i][0];
+      const dy = positions[j][1] - positions[i][1];
+      if (Math.abs(dx) + Math.abs(dy) === CELL) {
+        ctx.beginPath();
+        ctx.moveTo(positions[i][0] + offX + CELL/2, positions[i][1] + offY + CELL/2);
+        ctx.lineTo(positions[j][0] + offX + CELL/2, positions[j][1] + offY + CELL/2);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.setLineDash([]);
+
+  // draw nodes
+  positions.forEach(([x, y], i) => {
+    const aa = seq[i];
+    const hydro = isHydrophobic(aa);
+    const px = x + offX + CELL/2;
+    const py = y + offY + CELL/2;
+    ctx.beginPath();
+    ctx.arc(px, py, CELL * 0.4, 0, Math.PI * 2);
+    ctx.fillStyle = hydro ? '#f97316' : '#60a5fa';
+    ctx.fill();
+    ctx.strokeStyle = '#1f2937';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.max(8, CELL * 0.4)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(aa, px, py);
+  });
+}
+
+function foldHP(seq, cell) {
+  // Simple greedy spiral fold for visualization
+  const dirs = [[1,0],[0,1],[-1,0],[0,-1]]; // R D L U
+  const n = seq.length;
+  const pos = [[0, 0]];
+  const occupied = new Set(['0,0']);
+
+  // spiral layout: expand outward
+  let d = 0, steps = 1, stepCount = 0, turns = 0;
+  let cx = 0, cy = 0;
+
+  for (let i = 1; i < n; i++) {
+    let placed = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const dir = dirs[(d + attempt) % 4];
+      const nx = cx + dir[0];
+      const ny = cy + dir[1];
+      const key = `${nx},${ny}`;
+      if (!occupied.has(key)) {
+        pos.push([nx * cell, ny * cell]);
+        occupied.add(key);
+        cx = nx; cy = ny;
+        if (attempt > 0) d = (d + attempt) % 4;
+        placed = true;
+        stepCount++;
+        if (stepCount >= steps) {
+          stepCount = 0;
+          turns++;
+          d = (d + 1) % 4;
+          if (turns % 2 === 0) steps++;
+        }
+        break;
+      }
+    }
+    if (!placed) {
+      // fallback: find any free neighbor
+      const freeNeighbor = dirs.find(dir => {
+        const key = `${cx + dir[0]},${cy + dir[1]}`;
+        return !occupied.has(key);
+      });
+      if (freeNeighbor) {
+        cx += freeNeighbor[0]; cy += freeNeighbor[1];
+        pos.push([cx * cell, cy * cell]);
+        occupied.add(`${cx},${cy}`);
+      } else {
+        break;
+      }
+    }
+  }
+
+  return pos;
+}
+
+function drawSeqDisplay(seq) {
+  const el = document.getElementById('seqDisplay');
+  el.innerHTML = seq.split('').map((aa, i) => {
+    const score = KD[aa] !== undefined ? KD[aa] : 0;
+    const hydro = score > 0;
+    const bg = hydro ? 'bg-orange-600' : 'bg-blue-700';
+    return `<div class="flex flex-col items-center ${bg} rounded px-2 py-1">
+      <span class="font-mono font-bold text-white text-sm">${escapeHtml(aa)}</span>
+      <span class="text-xs text-white opacity-80">${score.toFixed(1)}</span>
+    </div>`;
+  }).join('');
+}
+
+function drawStats(seq) {
+  const scores = seq.split('').map(aa => KD[aa] !== undefined ? KD[aa] : 0);
+  const hydro = scores.filter(s => s > 0).length;
+  const philo = scores.filter(s => s <= 0).length;
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+
+  document.getElementById('stats').innerHTML = `
+    <div class="bg-orange-900 rounded p-2 text-center">
+      <div class="text-orange-300 font-bold text-lg">${hydro}</div>
+      <div class="text-xs text-gray-300">疎水性残基 (H)</div>
+    </div>
+    <div class="bg-blue-900 rounded p-2 text-center">
+      <div class="text-blue-300 font-bold text-lg">${philo}</div>
+      <div class="text-xs text-gray-300">親水性残基 (P)</div>
+    </div>
+    <div class="bg-gray-700 rounded p-2 text-center">
+      <div class="text-yellow-300 font-bold text-lg">${avg.toFixed(2)}</div>
+      <div class="text-xs text-gray-300">平均疎水性</div>
+    </div>
+  `;
+}
+
+function buildAATable() {
+  const tbody = document.getElementById('aaTable');
+  const sorted = Object.entries(KD).sort((a,b) => b[1]-a[1]);
+  tbody.innerHTML = sorted.map(([aa, score]) => {
+    const hydro = score > 0;
+    const scoreColor = hydro ? 'text-orange-300' : 'text-blue-300';
+    const hp = hydro ? '<span class="bg-orange-700 text-white px-1 rounded text-xs">H</span>' : '<span class="bg-blue-700 text-white px-1 rounded text-xs">P</span>';
+    return `<tr class="border-b border-gray-700 hover:bg-gray-700">
+      <td class="py-1 pr-3 font-mono font-bold text-white">${escapeHtml(aa)}</td>
+      <td class="py-1 pr-3 text-gray-300">${escapeHtml(AA_NAMES[aa] || '')}</td>
+      <td class="py-1 pr-3 ${scoreColor} font-mono">${score.toFixed(1)}</td>
+      <td class="py-1">${hp}</td>
+    </tr>`;
+  }).join('');
+}
+
+buildAATable();
+
+const saved = localStorage.getItem('protein-seq');
+if (saved) {
+  document.getElementById('seqInput').value = saved;
+}
+analyze();
+</script>
+</body>
+</html>
